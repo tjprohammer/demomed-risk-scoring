@@ -1,0 +1,32 @@
+{
+  "name": "demomed-risk-scoring",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DemoMed Healthcare API assessment: fetch patients, compute risk scores, and submit alert lists.",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "next build",
+    "start": "tsx src/server.ts",
+    "cli": "tsx src/cli.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "next": "^14.2.20",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}
