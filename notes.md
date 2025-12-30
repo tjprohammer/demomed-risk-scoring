@@ -20,6 +20,7 @@ This document explains how the assessment was solved, what was implemented, and 
 This repo supports **two ways** to run the solution:
 
 1. **CLI**
+
    - Fetches patients
    - Computes per-patient risk
    - Builds the three required lists
@@ -33,7 +34,7 @@ This repo supports **two ways** to run the solution:
      - `POST /submit` → computes alert lists and submits them
    - A Next.js page (`/`) provides a simple UI to load:
      - the alert lists (for the required payload)
-     - the per-patient debug table (to see *why* someone landed in a list)
+     - the per-patient debug table (to see _why_ someone landed in a list)
 
 Key files:
 
@@ -115,7 +116,7 @@ Validation rules:
 - Missing systolic or diastolic → invalid
 - Non-numeric values → invalid
 
-Staging rules (using the *higher risk* stage if systolic/diastolic differ):
+Staging rules (using the _higher risk_ stage if systolic/diastolic differ):
 
 - Normal: systolic < 120 AND diastolic < 80 → **1**
 - Elevated: systolic 120–129 AND diastolic < 80 → **2**

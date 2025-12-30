@@ -80,11 +80,9 @@ async function main(): Promise<void> {
   server.get("/alerts", async (req, res) => {
     const apiKey = getApiKey(req);
     if (!apiKey)
-      return res
-        .status(400)
-        .json({
-          error: "Missing x-api-key header (or DEMOMED_API_KEY env var).",
-        });
+      return res.status(400).json({
+        error: "Missing x-api-key header (or DEMOMED_API_KEY env var).",
+      });
 
     const baseUrl = getBaseUrl(req);
     const limit = Number.parseInt(
@@ -106,11 +104,9 @@ async function main(): Promise<void> {
   server.get("/scored", async (req, res) => {
     const apiKey = getApiKey(req);
     if (!apiKey)
-      return res
-        .status(400)
-        .json({
-          error: "Missing x-api-key header (or DEMOMED_API_KEY env var).",
-        });
+      return res.status(400).json({
+        error: "Missing x-api-key header (or DEMOMED_API_KEY env var).",
+      });
 
     const baseUrl = getBaseUrl(req);
     const limit = Number.parseInt(
@@ -132,11 +128,9 @@ async function main(): Promise<void> {
   server.post("/submit", async (req, res) => {
     const apiKey = getApiKey(req);
     if (!apiKey)
-      return res
-        .status(400)
-        .json({
-          error: "Missing x-api-key header (or DEMOMED_API_KEY env var).",
-        });
+      return res.status(400).json({
+        error: "Missing x-api-key header (or DEMOMED_API_KEY env var).",
+      });
 
     const baseUrl = getBaseUrl(req);
     const limit = Number.parseInt(

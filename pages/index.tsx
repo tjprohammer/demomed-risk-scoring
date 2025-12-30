@@ -98,10 +98,13 @@ export default function Home() {
       if (apiKey.trim()) headers["x-api-key"] = apiKey.trim();
       if (baseUrl.trim()) headers["x-base-url"] = baseUrl.trim();
 
-      const res = await fetch(`/scored?limit=${encodeURIComponent(String(limit))}`, {
-        method: "GET",
-        headers,
-      });
+      const res = await fetch(
+        `/scored?limit=${encodeURIComponent(String(limit))}`,
+        {
+          method: "GET",
+          headers,
+        }
+      );
 
       const body = (await res.json()) as any;
       if (!res.ok) {
@@ -109,11 +112,15 @@ export default function Home() {
         throw new Error(msg);
       }
 
-      const rows = Array.isArray(body?.data) ? (body.data as ScoredPatient[]) : [];
+      const rows = Array.isArray(body?.data)
+        ? (body.data as ScoredPatient[])
+        : [];
       setScored(rows);
       setLastLoadedAt(new Date().toISOString());
     } catch (e: any) {
-      setError(e?.message ? String(e.message) : "Failed to load scored patients");
+      setError(
+        e?.message ? String(e.message) : "Failed to load scored patients"
+      );
     } finally {
       setLoading(false);
     }
@@ -236,11 +243,15 @@ export default function Home() {
             </p>
 
             <p>
-              Showing <strong>{scored.length}</strong> patients with computed scores.
+              Showing <strong>{scored.length}</strong> patients with computed
+              scores.
             </p>
 
             <div style={{ overflowX: "auto" }}>
-              <table cellPadding={6} style={{ borderCollapse: "collapse", minWidth: 720 }}>
+              <table
+                cellPadding={6}
+                style={{ borderCollapse: "collapse", minWidth: 720 }}
+              >
                 <thead>
                   <tr>
                     <th align="left">Patient</th>

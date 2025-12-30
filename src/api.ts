@@ -185,28 +185,66 @@ export async function getAllPatients(
   client: ApiClient,
   limit = 20
 ): Promise<Record<string, unknown>[]> {
-  let page = 1;
-  const out: Record<string, unknown>[] = [];
-  let emptyPagesInARow = 0;
-
-  for (let guard = 0; guard < 200; guard += 1) {
+  async function fetchNormalizedPage(page: number): Promise<{
+    patients: Record<string, unknown>[];
+    resp: any;
+  }> {
     const resp: any = await client.getPatientsPage(page, limit);
-    const patients = normalizePatientsData(resp);
+    let patients = normalizePatientsData(resp);
 
+    // Occasionally a page may come back empty due to inconsistent API responses.
+    // Re-fetch once to reduce the chance of dropping patients.
     if (patients.length === 0) {
-      emptyPagesInARow += 1;
-    } else {
-      emptyPagesInARow = 0;
-      out.push(...patients);
+      await sleep(200);
+      const resp2: any = await client.getPatientsPage(page, limit);
+      const patients2 = normalizePatientsData(resp2);
+      if (patients2.length > 0) {
+        patients = patients2;
+        return { patients, resp: resp2 };
+      }
     }
 
-    const hasNext = resp?.pagination?.hasNext;
-    const totalPages = resp?.pagination?.totalPages;
+    return { patients, resp };
+  }
 
-    if (hasNext === false) break;
-    if (typeof totalPages === "number" && page >= totalPages) break;
+  const out: Record<string, unknown>[] = [];
 
-    if (emptyPagesInARow >= 2) break;
+  // First page read to determine totalPages/hasNext.
+  const first = await fetchNormalizedPage(1);
+  out.push(...first.patients);
+
+  const totalPages = first.resp?.pagination?.totalPages;
+  const hasNext = first.resp?.pagination?.hasNext;
+
+  // If totalPages is provided, prefer deterministic iteration to avoid stopping
+  // early when an intermediate page is empty.
+  if (typeof totalPages === "number" && Number.isFinite(totalPages)) {
+    const cappedTotalPages = Math.min(Math.max(Math.trunc(totalPages), 1), 200);
+    for (let page = 2; page <= cappedTotalPages; page += 1) {
+      const { patients } = await fetchNormalizedPage(page);
+      out.push(...patients);
+      await sleep(250);
+    }
+    return out;
+  }
+
+  if (hasNext === false) return out;
+
+  // Fallback when pagination metadata is missing/unreliable.
+  let emptyPagesInARow = first.patients.length === 0 ? 1 : 0;
+  let page = 2;
+
+  for (let guard = 0; guard < 200; guard += 1) {
+    const { patients, resp } = await fetchNormalizedPage(page);
+
+    if (patients.length === 0) emptyPagesInARow += 1;
+    else emptyPagesInARow = 0;
+
+    out.push(...patients);
+
+    const next = resp?.pagination?.hasNext;
+    if (next === false) break;
+    if (emptyPagesInARow >= 5) break;
 
     page += 1;
     await sleep(250);
