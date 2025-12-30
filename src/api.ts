@@ -218,6 +218,7 @@ export type PatientsFetchMeta = {
   totalPages: number | null;
   missingPages: number[];
   uniquePatientIds: number;
+  complete: boolean;
 };
 
 export async function getAllPatientsWithMeta(
@@ -262,71 +263,140 @@ export async function getAllPatientsWithMeta(
 
   const out: Record<string, unknown>[] = [];
   const missingPages: number[] = [];
+  const seenIds = new Set<string>();
+  let completeByHeuristic = false;
+  let maxPageFetched = 0;
+
+  let expectedTotal: number | null = null;
+  let totalPages: number | null = null;
+
+  function parseFiniteInt(value: unknown): number | null {
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return Math.trunc(value);
+    }
+    if (typeof value === "string") {
+      const n = Number.parseInt(value.trim(), 10);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  }
+
+  function learnPagination(resp: any): void {
+    const expectedTotalRaw = resp?.pagination?.total;
+    const expectedParsed = parseFiniteInt(expectedTotalRaw);
+    if (expectedTotal === null && expectedParsed !== null) {
+      expectedTotal = Math.max(expectedParsed, 0);
+    }
+
+    const totalPagesRaw = resp?.pagination?.totalPages;
+    const pagesParsed = parseFiniteInt(totalPagesRaw);
+    if (totalPages === null && pagesParsed !== null) {
+      totalPages = Math.min(Math.max(pagesParsed, 1), maxTotalPages);
+    }
+  }
+
+  function countNewIds(patients: Record<string, unknown>[]): number {
+    let added = 0;
+    for (const p of patients) {
+      const id = getPatientIdFromRecord(p);
+      if (!id) continue;
+      if (!seenIds.has(id)) {
+        seenIds.add(id);
+        added += 1;
+      }
+    }
+    return added;
+  }
 
   // First page read to determine totalPages/total.
   const first = await fetchNormalizedPage(1);
+  maxPageFetched = Math.max(maxPageFetched, 1);
   if (first.patients.length === 0) missingPages.push(1);
   out.push(...first.patients);
+  learnPagination(first.resp);
+  countNewIds(first.patients);
 
-  const expectedTotalRaw = first.resp?.pagination?.total;
-  const expectedTotal =
-    typeof expectedTotalRaw === "number" && Number.isFinite(expectedTotalRaw)
-      ? Math.max(Math.trunc(expectedTotalRaw), 0)
-      : null;
+  // Completion heuristic: stop after N pages that add 0 new unique IDs.
+  // This helps when pagination metadata is missing or inconsistent.
+  const maxNoNewIdPages = 5;
+  let noNewIdPagesInARow = first.patients.length === 0 ? 1 : 0;
+  let page = 2;
 
-  const totalPagesRaw = first.resp?.pagination?.totalPages;
-  const totalPages =
-    typeof totalPagesRaw === "number" && Number.isFinite(totalPagesRaw)
-      ? Math.min(Math.max(Math.trunc(totalPagesRaw), 1), maxTotalPages)
-      : null;
+  for (let guard = 0; guard < maxTotalPages; guard += 1) {
+    const { patients, resp } = await fetchNormalizedPage(page);
+    maxPageFetched = Math.max(maxPageFetched, page);
+    learnPagination(resp);
 
-  // If totalPages is known, fetch deterministically.
-  if (totalPages !== null) {
-    for (let page = 2; page <= totalPages; page += 1) {
-      const { patients } = await fetchNormalizedPage(page);
-      if (patients.length === 0) missingPages.push(page);
-      out.push(...patients);
-      await sleep(sleepBetweenPagesMs);
+    if (patients.length === 0) missingPages.push(page);
+    out.push(...patients);
+
+    const newIds = countNewIds(patients);
+    if (newIds === 0) noNewIdPagesInARow += 1;
+    else noNewIdPagesInARow = 0;
+
+    // If totalPages is available, use it as a hint for when to start applying
+    // the "no new IDs" completion condition.
+    const pastExpectedEnd =
+      totalPages !== null ? page >= totalPages : page >= 10;
+
+    if (noNewIdPagesInARow >= maxNoNewIdPages && pastExpectedEnd) {
+      completeByHeuristic = true;
+      break;
     }
 
-    // If we still have missing pages, do a couple recovery passes.
+    page += 1;
+    await sleep(sleepBetweenPagesMs);
+  }
+
+  // If totalPages is known and we still have missing pages, do recovery passes.
+  if (totalPages !== null && missingPages.length > 0) {
     for (let round = 0; round < 2 && missingPages.length > 0; round += 1) {
       const stillMissing: number[] = [];
-      for (const page of missingPages) {
-        const { patients } = await fetchNormalizedPage(page);
-        if (patients.length === 0) stillMissing.push(page);
-        else out.push(...patients);
+      for (const missingPage of missingPages) {
+        // Don't waste time recovering pages beyond totalPages.
+        if (missingPage > totalPages) continue;
+        const { patients } = await fetchNormalizedPage(missingPage);
+        maxPageFetched = Math.max(maxPageFetched, missingPage);
+        if (patients.length === 0) stillMissing.push(missingPage);
+        else {
+          out.push(...patients);
+          countNewIds(patients);
+        }
         await sleep(sleepBetweenPagesMs);
       }
       missingPages.splice(0, missingPages.length, ...stillMissing);
     }
-  } else {
-    // Fallback when pagination metadata is missing/unreliable.
-    let page = 2;
-    let emptyPagesInARow = first.patients.length === 0 ? 1 : 0;
 
-    for (let guard = 0; guard < maxTotalPages; guard += 1) {
-      const { patients, resp } = await fetchNormalizedPage(page);
-      if (patients.length === 0) emptyPagesInARow += 1;
-      else emptyPagesInARow = 0;
-
-      out.push(...patients);
-
-      const hasNext = resp?.pagination?.hasNext;
-      if (hasNext === false) break;
-      if (emptyPagesInARow >= 5) break;
-
-      page += 1;
-      await sleep(sleepBetweenPagesMs);
-    }
+    // If we expected a fixed number of pages and none are missing after retries,
+    // we can consider the fetch complete (subject to the expectedTotal check below).
+    if (missingPages.length === 0) completeByHeuristic = true;
   }
 
   const deduped = dedupeByPatientId(out);
+
+  const missingWithinExpectedRange =
+    totalPages !== null
+      ? Array.from(new Set(missingPages)).filter(
+          (p) => p >= 1 && p <= totalPages
+        )
+      : Array.from(new Set(missingPages));
+
+  // Final, conservative completeness:
+  // - If expectedTotal is known, require uniquePatientIds >= expectedTotal.
+  // - Else if totalPages is known, require we fetched at least through totalPages AND no missing pages within 1..totalPages.
+  // - Else, we cannot confidently assert completeness.
+  const complete =
+    expectedTotal !== null
+      ? deduped.uniquePatientIds >= expectedTotal
+      : totalPages !== null
+      ? maxPageFetched >= totalPages && missingWithinExpectedRange.length === 0
+      : false;
   const meta: PatientsFetchMeta = {
     expectedTotal,
     totalPages,
-    missingPages: Array.from(new Set(missingPages)).sort((a, b) => a - b),
+    missingPages: missingWithinExpectedRange.sort((a, b) => a - b),
     uniquePatientIds: deduped.uniquePatientIds,
+    complete,
   };
 
   return { patients: deduped.patients, meta };

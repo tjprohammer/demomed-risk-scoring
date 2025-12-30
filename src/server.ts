@@ -39,12 +39,15 @@ async function computeAlerts(
 
   if (
     opts.requireComplete &&
-    meta.expectedTotal !== null &&
-    meta.uniquePatientIds > 0 &&
-    meta.uniquePatientIds < meta.expectedTotal
+    (!meta.complete ||
+      (meta.expectedTotal !== null &&
+        meta.uniquePatientIds > 0 &&
+        meta.uniquePatientIds < meta.expectedTotal))
   ) {
     throw new Error(
-      `Incomplete fetch: collected ${meta.uniquePatientIds}/${meta.expectedTotal} unique patient_ids. Try again.`
+      meta.expectedTotal !== null
+        ? `Incomplete fetch: collected ${meta.uniquePatientIds}/${meta.expectedTotal} unique patient_ids (complete=${meta.complete}). Try again.`
+        : `Incomplete fetch: fetch not marked complete (complete=${meta.complete}). Try again.`
     );
   }
 

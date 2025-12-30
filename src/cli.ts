@@ -36,11 +36,14 @@ export async function runCli(): Promise<void> {
     DEFAULT_BASE_URL;
   const positionalLimit = getPositionalNumberArg(2);
   const limit = Number.parseInt(
-    process.env.DEMOMED_LIMIT || getArgValue("--limit") || String(positionalLimit ?? 20),
+    process.env.DEMOMED_LIMIT ||
+      getArgValue("--limit") ||
+      String(positionalLimit ?? 20),
     10
   );
   const outPath = getArgValue("--out") || "alert-lists.json";
   const shouldSubmit = hasFlag("--submit");
+  const requireComplete = hasFlag("--requireComplete") || hasFlag("--verify");
 
   if (!apiKey) {
     console.error("Missing API key. Set DEMOMED_API_KEY or pass --apiKey.");
@@ -56,29 +59,33 @@ export async function runCli(): Promise<void> {
   );
 
   const expected = meta.expectedTotal;
-  if (expected !== null) {
-    console.log(
-      `Fetched ${patients.length} patient records (unique patient_ids: ${meta.uniquePatientIds}/${expected}).`
-    );
-  } else {
-    console.log(`Fetched ${patients.length} patient records.`);
-  }
+  const totalPages = meta.totalPages;
+  const pagingInfo =
+    expected !== null
+      ? `unique patient_ids: ${meta.uniquePatientIds}/${expected}`
+      : `unique patient_ids: ${meta.uniquePatientIds}`;
+
+  const pagesInfo = totalPages !== null ? `, totalPages: ${totalPages}` : "";
+  const completeInfo = `, complete: ${meta.complete ? "yes" : "no"}`;
+
+  console.log(
+    `Fetched ${patients.length} patient records (${pagingInfo}${pagesInfo}${completeInfo}).`
+  );
 
   if (meta.missingPages.length > 0) {
     console.warn(
-      `Warning: some pages returned empty after retries: ${meta.missingPages.join(", ")}`
+      `Warning: some pages returned empty after retries: ${meta.missingPages.join(
+        ", "
+      )}`
     );
   }
 
-  if (
-    shouldSubmit &&
-    expected !== null &&
-    meta.uniquePatientIds > 0 &&
-    meta.uniquePatientIds < expected
-  ) {
-    console.error(
-      `Refusing to submit: collected ${meta.uniquePatientIds}/${expected} unique patient_ids. Re-run to fetch all data.`
-    );
+  if ((shouldSubmit || requireComplete) && !meta.complete) {
+    const msg =
+      expected !== null
+        ? `Fetch incomplete: collected ${meta.uniquePatientIds}/${expected} unique patient_ids (complete=${meta.complete}). Re-run to fetch all data.`
+        : `Fetch incomplete: cannot confirm completeness from API metadata (complete=${meta.complete}). Re-run to fetch all data.`;
+    console.error(shouldSubmit ? `Refusing to submit: ${msg}` : msg);
     process.exit(1);
   }
 
