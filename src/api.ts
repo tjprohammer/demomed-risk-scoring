@@ -181,74 +181,161 @@ export function normalizePatientsData(
   return [];
 }
 
-export async function getAllPatients(
+function getPatientIdFromRecord(p: unknown): string | null {
+  const obj = p as any;
+  const candidates = [obj?.patient_id, obj?.patientId, obj?.id, obj?.patientID];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  return null;
+}
+
+function dedupeByPatientId(patients: Record<string, unknown>[]): {
+  patients: Record<string, unknown>[];
+  uniquePatientIds: number;
+} {
+  const byId = new Map<string, Record<string, unknown>>();
+  const noId: Record<string, unknown>[] = [];
+
+  for (const p of patients) {
+    const id = getPatientIdFromRecord(p);
+    if (!id) {
+      noId.push(p);
+      continue;
+    }
+    if (!byId.has(id)) byId.set(id, p);
+  }
+
+  const deduped = Array.from(byId.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([, v]) => v);
+
+  return { patients: [...deduped, ...noId], uniquePatientIds: byId.size };
+}
+
+export type PatientsFetchMeta = {
+  expectedTotal: number | null;
+  totalPages: number | null;
+  missingPages: number[];
+  uniquePatientIds: number;
+};
+
+export async function getAllPatientsWithMeta(
   client: ApiClient,
-  limit = 20
-): Promise<Record<string, unknown>[]> {
+  limit = 20,
+  opts: {
+    maxPageAttempts?: number;
+    maxTotalPages?: number;
+    sleepBetweenPagesMs?: number;
+    sleepBetweenAttemptsMs?: number;
+  } = {}
+): Promise<{ patients: Record<string, unknown>[]; meta: PatientsFetchMeta }> {
+  const maxPageAttempts = Math.min(Math.max(opts.maxPageAttempts ?? 5, 1), 12);
+  const maxTotalPages = Math.min(Math.max(opts.maxTotalPages ?? 200, 1), 500);
+  const sleepBetweenPagesMs = Math.min(
+    Math.max(opts.sleepBetweenPagesMs ?? 250, 0),
+    5000
+  );
+  const sleepBetweenAttemptsMs = Math.min(
+    Math.max(opts.sleepBetweenAttemptsMs ?? 250, 0),
+    5000
+  );
+
   async function fetchNormalizedPage(page: number): Promise<{
     patients: Record<string, unknown>[];
     resp: any;
   }> {
-    const resp: any = await client.getPatientsPage(page, limit);
-    let patients = normalizePatientsData(resp);
-
-    // Occasionally a page may come back empty due to inconsistent API responses.
-    // Re-fetch once to reduce the chance of dropping patients.
-    if (patients.length === 0) {
-      await sleep(200);
-      const resp2: any = await client.getPatientsPage(page, limit);
-      const patients2 = normalizePatientsData(resp2);
-      if (patients2.length > 0) {
-        patients = patients2;
-        return { patients, resp: resp2 };
-      }
+    let lastResp: any = null;
+    for (let attempt = 1; attempt <= maxPageAttempts; attempt += 1) {
+      const resp: any = await client.getPatientsPage(page, limit);
+      lastResp = resp;
+      const patients = normalizePatientsData(resp);
+      if (patients.length > 0) return { patients, resp };
+      await sleep(sleepBetweenAttemptsMs * attempt);
     }
 
-    return { patients, resp };
+    return {
+      patients: normalizePatientsData(lastResp),
+      resp: lastResp,
+    };
   }
 
   const out: Record<string, unknown>[] = [];
+  const missingPages: number[] = [];
 
-  // First page read to determine totalPages/hasNext.
+  // First page read to determine totalPages/total.
   const first = await fetchNormalizedPage(1);
+  if (first.patients.length === 0) missingPages.push(1);
   out.push(...first.patients);
 
-  const totalPages = first.resp?.pagination?.totalPages;
-  const hasNext = first.resp?.pagination?.hasNext;
+  const expectedTotalRaw = first.resp?.pagination?.total;
+  const expectedTotal =
+    typeof expectedTotalRaw === "number" && Number.isFinite(expectedTotalRaw)
+      ? Math.max(Math.trunc(expectedTotalRaw), 0)
+      : null;
 
-  // If totalPages is provided, prefer deterministic iteration to avoid stopping
-  // early when an intermediate page is empty.
-  if (typeof totalPages === "number" && Number.isFinite(totalPages)) {
-    const cappedTotalPages = Math.min(Math.max(Math.trunc(totalPages), 1), 200);
-    for (let page = 2; page <= cappedTotalPages; page += 1) {
+  const totalPagesRaw = first.resp?.pagination?.totalPages;
+  const totalPages =
+    typeof totalPagesRaw === "number" && Number.isFinite(totalPagesRaw)
+      ? Math.min(Math.max(Math.trunc(totalPagesRaw), 1), maxTotalPages)
+      : null;
+
+  // If totalPages is known, fetch deterministically.
+  if (totalPages !== null) {
+    for (let page = 2; page <= totalPages; page += 1) {
       const { patients } = await fetchNormalizedPage(page);
+      if (patients.length === 0) missingPages.push(page);
       out.push(...patients);
-      await sleep(250);
+      await sleep(sleepBetweenPagesMs);
     }
-    return out;
+
+    // If we still have missing pages, do a couple recovery passes.
+    for (let round = 0; round < 2 && missingPages.length > 0; round += 1) {
+      const stillMissing: number[] = [];
+      for (const page of missingPages) {
+        const { patients } = await fetchNormalizedPage(page);
+        if (patients.length === 0) stillMissing.push(page);
+        else out.push(...patients);
+        await sleep(sleepBetweenPagesMs);
+      }
+      missingPages.splice(0, missingPages.length, ...stillMissing);
+    }
+  } else {
+    // Fallback when pagination metadata is missing/unreliable.
+    let page = 2;
+    let emptyPagesInARow = first.patients.length === 0 ? 1 : 0;
+
+    for (let guard = 0; guard < maxTotalPages; guard += 1) {
+      const { patients, resp } = await fetchNormalizedPage(page);
+      if (patients.length === 0) emptyPagesInARow += 1;
+      else emptyPagesInARow = 0;
+
+      out.push(...patients);
+
+      const hasNext = resp?.pagination?.hasNext;
+      if (hasNext === false) break;
+      if (emptyPagesInARow >= 5) break;
+
+      page += 1;
+      await sleep(sleepBetweenPagesMs);
+    }
   }
 
-  if (hasNext === false) return out;
+  const deduped = dedupeByPatientId(out);
+  const meta: PatientsFetchMeta = {
+    expectedTotal,
+    totalPages,
+    missingPages: Array.from(new Set(missingPages)).sort((a, b) => a - b),
+    uniquePatientIds: deduped.uniquePatientIds,
+  };
 
-  // Fallback when pagination metadata is missing/unreliable.
-  let emptyPagesInARow = first.patients.length === 0 ? 1 : 0;
-  let page = 2;
+  return { patients: deduped.patients, meta };
+}
 
-  for (let guard = 0; guard < 200; guard += 1) {
-    const { patients, resp } = await fetchNormalizedPage(page);
-
-    if (patients.length === 0) emptyPagesInARow += 1;
-    else emptyPagesInARow = 0;
-
-    out.push(...patients);
-
-    const next = resp?.pagination?.hasNext;
-    if (next === false) break;
-    if (emptyPagesInARow >= 5) break;
-
-    page += 1;
-    await sleep(250);
-  }
-
-  return out;
+export async function getAllPatients(
+  client: ApiClient,
+  limit = 20
+): Promise<Record<string, unknown>[]> {
+  const { patients } = await getAllPatientsWithMeta(client, limit);
+  return patients;
 }

@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import { ApiClient, getAllPatients } from "./api";
+import { ApiClient, getAllPatientsWithMeta } from "./api";
 import { buildAlertLists } from "./alerts";
 import { computePatientRisk } from "./scoring";
 
@@ -20,14 +20,23 @@ function hasFlag(flag: string): boolean {
   return process.argv.some((a) => a === flag || a.startsWith(`${flag}=`));
 }
 
+function getPositionalNumberArg(index: number): number | null {
+  const v = process.argv[index];
+  if (!v) return null;
+  if (v.startsWith("--")) return null;
+  const n = Number.parseInt(v, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
 export async function runCli(): Promise<void> {
   const apiKey = process.env.DEMOMED_API_KEY || getArgValue("--apiKey");
   const baseUrl =
     process.env.DEMOMED_BASE_URL ||
     getArgValue("--baseUrl") ||
     DEFAULT_BASE_URL;
+  const positionalLimit = getPositionalNumberArg(2);
   const limit = Number.parseInt(
-    process.env.DEMOMED_LIMIT || getArgValue("--limit") || "20",
+    process.env.DEMOMED_LIMIT || getArgValue("--limit") || String(positionalLimit ?? 20),
     10
   );
   const outPath = getArgValue("--out") || "alert-lists.json";
@@ -41,11 +50,37 @@ export async function runCli(): Promise<void> {
   const client = new ApiClient({ baseUrl, apiKey });
 
   console.log(`Fetching patients from ${baseUrl} ...`);
-  const patients = await getAllPatients(
+  const { patients, meta } = await getAllPatientsWithMeta(
     client,
     Math.min(Math.max(limit, 1), 20)
   );
-  console.log(`Fetched ${patients.length} patient records.`);
+
+  const expected = meta.expectedTotal;
+  if (expected !== null) {
+    console.log(
+      `Fetched ${patients.length} patient records (unique patient_ids: ${meta.uniquePatientIds}/${expected}).`
+    );
+  } else {
+    console.log(`Fetched ${patients.length} patient records.`);
+  }
+
+  if (meta.missingPages.length > 0) {
+    console.warn(
+      `Warning: some pages returned empty after retries: ${meta.missingPages.join(", ")}`
+    );
+  }
+
+  if (
+    shouldSubmit &&
+    expected !== null &&
+    meta.uniquePatientIds > 0 &&
+    meta.uniquePatientIds < expected
+  ) {
+    console.error(
+      `Refusing to submit: collected ${meta.uniquePatientIds}/${expected} unique patient_ids. Re-run to fetch all data.`
+    );
+    process.exit(1);
+  }
 
   const computed = [];
   let dropped = 0;

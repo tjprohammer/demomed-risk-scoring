@@ -1,6 +1,6 @@
 import express from "express";
 import next from "next";
-import { ApiClient, getAllPatients } from "./api";
+import { ApiClient, getAllPatientsWithMeta } from "./api";
 import { buildAlertLists } from "./alerts";
 import { computePatientRisk, computePatientRiskDetails } from "./scoring";
 import type { AlertLists, ComputedPatientRiskDetails } from "./types";
@@ -28,13 +28,25 @@ function getBaseUrl(req: express.Request): string {
 async function computeAlerts(
   apiKey: string,
   baseUrl: string,
-  limit = 20
+  limit = 20,
+  opts: { requireComplete?: boolean } = {}
 ): Promise<AlertLists> {
   const client = new ApiClient({ baseUrl, apiKey });
-  const patients = await getAllPatients(
+  const { patients, meta } = await getAllPatientsWithMeta(
     client,
     Math.min(Math.max(limit, 1), 20)
   );
+
+  if (
+    opts.requireComplete &&
+    meta.expectedTotal !== null &&
+    meta.uniquePatientIds > 0 &&
+    meta.uniquePatientIds < meta.expectedTotal
+  ) {
+    throw new Error(
+      `Incomplete fetch: collected ${meta.uniquePatientIds}/${meta.expectedTotal} unique patient_ids. Try again.`
+    );
+  }
 
   const computed = [];
   for (const p of patients) {
@@ -51,7 +63,7 @@ async function computeScoredPatients(
   limit = 20
 ): Promise<ComputedPatientRiskDetails[]> {
   const client = new ApiClient({ baseUrl, apiKey });
-  const patients = await getAllPatients(
+  const { patients } = await getAllPatientsWithMeta(
     client,
     Math.min(Math.max(limit, 1), 20)
   );
@@ -139,7 +151,9 @@ async function main(): Promise<void> {
     );
 
     try {
-      const alerts = await computeAlerts(apiKey, baseUrl, limit);
+      const alerts = await computeAlerts(apiKey, baseUrl, limit, {
+        requireComplete: true,
+      });
       const client = new ApiClient({ baseUrl, apiKey });
       const result = await client.submitAssessment(alerts);
       return res.json(result);
