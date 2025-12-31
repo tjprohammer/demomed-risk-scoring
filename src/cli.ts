@@ -20,6 +20,12 @@ function hasFlag(flag: string): boolean {
   return process.argv.some((a) => a === flag || a.startsWith(`${flag}=`));
 }
 
+function envFlag(name: string): boolean {
+  const v = process.env[name];
+  if (!v) return false;
+  return v === "1" || v.toLowerCase() === "true" || v.toLowerCase() === "yes";
+}
+
 function getPositionalNumberArg(index: number): number | null {
   const v = process.argv[index];
   if (!v) return null;
@@ -42,8 +48,9 @@ export async function runCli(): Promise<void> {
     10
   );
   const outPath = getArgValue("--out") || "alert-lists.json";
-  const shouldSubmit = hasFlag("--submit");
-  const requireComplete = hasFlag("--requireComplete") || hasFlag("--verify");
+  const shouldSubmit = hasFlag("--submit") || envFlag("DEMOMED_SUBMIT");
+  const requireComplete =
+    hasFlag("--requireComplete") || hasFlag("--verify") || envFlag("DEMOMED_VERIFY");
 
   if (!apiKey) {
     console.error("Missing API key. Set DEMOMED_API_KEY or pass --apiKey.");

@@ -9,6 +9,8 @@
     "build": "next build",
     "start": "tsx src/server.ts",
     "cli": "tsx src/cli.ts",
+    "verify": "tsx src/cli.ts --limit=20 --verify",
+    "submit": "tsx src/cli.ts --limit=20 --submit",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

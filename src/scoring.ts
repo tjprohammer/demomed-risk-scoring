@@ -102,13 +102,14 @@ export function scoreBloodPressure(bpValue: unknown): {
   const s = bp.systolic;
   const d = bp.diastolic;
 
-  if (s < 120 && d < 80) return { score: 1, valid: true }; // Normal
-  if (s >= 120 && s <= 129 && d < 80) return { score: 2, valid: true }; // Elevated
+  // Scoring weights are 0..3 to avoid classifying common vitals as high-risk.
+  if (s < 120 && d < 80) return { score: 0, valid: true }; // Normal
+  if (s >= 120 && s <= 129 && d < 80) return { score: 1, valid: true }; // Elevated
 
   // Stage 2 must override stage 1 when readings disagree (e.g., 150/85).
-  if (s >= 140 || d >= 90) return { score: 4, valid: true }; // Stage 2
+  if (s >= 140 || d >= 90) return { score: 3, valid: true }; // Stage 2
   if ((s >= 130 && s <= 139) || (d >= 80 && d <= 89))
-    return { score: 3, valid: true }; // Stage 1
+    return { score: 2, valid: true }; // Stage 1
 
   return { score: 0, valid: false };
 }
@@ -145,6 +146,7 @@ export function scoreAge(ageValue: unknown): {
   const age = Math.trunc(parsed.value);
   if (!Number.isFinite(age)) return { score: 0, valid: false, age: null };
 
+  if (age < 40) return { score: 0, valid: true, age };
   if (age > 65) return { score: 2, valid: true, age };
   return { score: 1, valid: true, age };
 }

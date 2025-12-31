@@ -50,7 +50,7 @@ export class ApiClient {
     baseUrl,
     apiKey,
     timeoutMs = 15000,
-    maxRetries = 6,
+    maxRetries = 12,
     minDelayMs = 200,
     fetchImpl = fetch,
     sleepImpl = sleep,
@@ -98,13 +98,48 @@ export class ApiClient {
         }
 
         // 429 rate limiting
-        if (res.status === 429 && attempt <= this.maxRetries) {
-          const ra = res.headers.get("retry-after");
-          const waitMs = ra ? Number.parseInt(ra, 10) * 1000 : backoffMs;
+        if (res.status === 429) {
+          const retryAfterHeader = res.headers.get("retry-after");
+          const retryAfterSecondsFromHeader = retryAfterHeader
+            ? Number.parseInt(retryAfterHeader, 10)
+            : NaN;
+
+          const retryAfterSecondsFromBody =
+            body && typeof body === "object"
+              ? Number.parseInt(
+                  String(
+                    (body as any).retry_after ??
+                      (body as any).retryAfter ??
+                      (body as any).retryAfterSeconds ??
+                      ""
+                  ),
+                  10
+                )
+              : NaN;
+
+          const retryAfterSeconds = Number.isFinite(retryAfterSecondsFromHeader)
+            ? retryAfterSecondsFromHeader
+            : Number.isFinite(retryAfterSecondsFromBody)
+              ? retryAfterSecondsFromBody
+              : NaN;
+
+          const waitMs = Number.isFinite(retryAfterSeconds)
+            ? Math.max(retryAfterSeconds, 0) * 1000
+            : backoffMs;
+
+          if (attempt <= this.maxRetries) {
+            clearTimeout(timer);
+            await this.sleepImpl(jitter(Math.max(waitMs, backoffMs)));
+            backoffMs = Math.min(backoffMs * 2, 8000);
+            continue;
+          }
+
           clearTimeout(timer);
-          await this.sleepImpl(jitter(Math.max(waitMs, backoffMs)));
-          backoffMs = Math.min(backoffMs * 2, 8000);
-          continue;
+          const msg = typeof body === "string" ? body : JSON.stringify(body);
+          const extra = Number.isFinite(retryAfterSeconds)
+            ? ` (suggested wait: ${retryAfterSeconds}s)`
+            : "";
+          throw new Error(`HTTP 429 Too Many Requests${extra}: ${msg}`);
         }
 
         // transient server failures
@@ -374,12 +409,12 @@ export async function getAllPatientsWithMeta(
 
   const deduped = dedupeByPatientId(out);
 
-  const missingWithinExpectedRange =
-    totalPages !== null
-      ? Array.from(new Set(missingPages)).filter(
-          (p) => p >= 1 && p <= totalPages
-        )
-      : Array.from(new Set(missingPages));
+  const missingWithinExpectedRange = (() => {
+    const tp = totalPages;
+    const uniqueMissing = Array.from(new Set(missingPages));
+    if (tp === null) return uniqueMissing;
+    return uniqueMissing.filter((p) => p >= 1 && p <= tp);
+  })();
 
   // Final, conservative completeness:
   // - If expectedTotal is known, require uniquePatientIds >= expectedTotal.

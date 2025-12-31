@@ -48,21 +48,21 @@ describe("blood pressure parsing", () => {
 
 describe("blood pressure scoring", () => {
   test("normal", () => {
-    expect(scoreBloodPressure("119/79")).toEqual({ score: 1, valid: true });
+    expect(scoreBloodPressure("119/79")).toEqual({ score: 0, valid: true });
   });
 
   test("elevated", () => {
-    expect(scoreBloodPressure("125/79")).toEqual({ score: 2, valid: true });
+    expect(scoreBloodPressure("125/79")).toEqual({ score: 1, valid: true });
   });
 
   test("stage 1", () => {
-    expect(scoreBloodPressure("131/79")).toEqual({ score: 3, valid: true });
-    expect(scoreBloodPressure("119/85")).toEqual({ score: 3, valid: true });
+    expect(scoreBloodPressure("131/79")).toEqual({ score: 2, valid: true });
+    expect(scoreBloodPressure("119/85")).toEqual({ score: 2, valid: true });
   });
 
   test("stage 2 overrides stage 1 when mixed", () => {
-    expect(scoreBloodPressure("150/85")).toEqual({ score: 4, valid: true });
-    expect(scoreBloodPressure("135/95")).toEqual({ score: 4, valid: true });
+    expect(scoreBloodPressure("150/85")).toEqual({ score: 3, valid: true });
+    expect(scoreBloodPressure("135/95")).toEqual({ score: 3, valid: true });
   });
 
   test("invalid returns 0/invalid", () => {
@@ -99,8 +99,11 @@ describe("temperature scoring", () => {
 });
 
 describe("age scoring", () => {
-  test("<=65 is 1 point", () => {
-    expect(scoreAge(39)).toMatchObject({ score: 1, valid: true });
+  test("<40 is 0 points", () => {
+    expect(scoreAge(39)).toMatchObject({ score: 0, valid: true });
+  });
+
+  test("40-65 is 1 point", () => {
     expect(scoreAge(65)).toMatchObject({ score: 1, valid: true });
   });
 
@@ -125,7 +128,7 @@ describe("computePatientRisk", () => {
       temperature: 101,
       blood_pressure: "119/79",
     });
-    expect(r?.scores.total).toBe(1 + 2 + 2);
+    expect(r?.scores.total).toBe(0 + 2 + 2);
     expect(r?.flags.highRisk).toBe(true);
     expect(r?.flags.fever).toBe(true);
   });
