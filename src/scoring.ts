@@ -1,5 +1,11 @@
 import type { ComputedPatientRisk, ComputedPatientRiskDetails } from "./types";
 
+/**
+ * Stringifies unknown values safely.
+ *
+ * This is used before parsing to normalize `null`/`undefined` into an empty
+ * string and to avoid throwing when calling `.trim()`.
+ */
 function asString(value: unknown): string {
   if (value === null || value === undefined) return "";
   return String(value);
@@ -29,6 +35,16 @@ export function parseLooseNumber(value: unknown): {
   return { value: n, valid: true };
 }
 
+/**
+ * Parses a blood pressure reading from unknown input.
+ *
+ * Accepted formats (to tolerate inconsistent API shapes):
+ * - String: "120/80" (any surrounding whitespace is ignored)
+ * - Array/tuple: [120, 80]
+ * - Object: { systolic: 120, diastolic: 80 } and common aliases (`sys`/`dia`)
+ *
+ * Returned values are integers (via truncation/parseInt).
+ */
 export function parseBloodPressure(value: unknown): {
   systolic: number | null;
   diastolic: number | null;
@@ -91,6 +107,16 @@ export function parseBloodPressure(value: unknown): {
   return { systolic, diastolic, valid: true };
 }
 
+/**
+ * Scores a blood pressure reading.
+ *
+ * - Returns `{ score: 0, valid: false }` for missing/invalid inputs.
+ * - Otherwise returns a category score based on systolic/diastolic.
+ *
+ * Important behavior:
+ * - When systolic and diastolic fall into different categories, we apply the
+ *   higher-risk category (e.g., 150/85 is Stage 2 because systolic >= 140).
+ */
 export function scoreBloodPressure(bpValue: unknown): {
   score: number;
   valid: boolean;
@@ -114,6 +140,12 @@ export function scoreBloodPressure(bpValue: unknown): {
   return { score: 0, valid: false };
 }
 
+/**
+ * Scores a temperature reading (°F).
+ *
+ * - Returns `{ valid: false }` when the input cannot be parsed as a number.
+ * - `fever` is defined as `temp >= 99.6` when valid.
+ */
 export function scoreTemperature(tempValue: unknown): {
   score: number;
   valid: boolean;
@@ -134,6 +166,12 @@ export function scoreTemperature(tempValue: unknown): {
   return { score: 0, valid: true, fever, temp: t };
 }
 
+/**
+ * Scores age.
+ *
+ * - Returns `{ valid: false }` when the input cannot be parsed as a number.
+ * - Otherwise assigns points based on age bands.
+ */
 export function scoreAge(ageValue: unknown): {
   score: number;
   valid: boolean;
@@ -151,6 +189,11 @@ export function scoreAge(ageValue: unknown): {
   return { score: 1, valid: true, age };
 }
 
+/**
+ * Extracts patient id from a patient record.
+ *
+ * The API can return different id keys, so we check several.
+ */
 function getPatientId(p: unknown): string | null {
   const obj = p as any;
   const candidates = [obj?.patient_id, obj?.patientId, obj?.id, obj?.patientID];
@@ -160,6 +203,11 @@ function getPatientId(p: unknown): string | null {
   return null;
 }
 
+/**
+ * Picks the first matching field from an object.
+ *
+ * Used to tolerate inconsistent key names coming from upstream data.
+ */
 function pickField(p: unknown, keys: string[]): unknown {
   const obj = p as any;
   for (const k of keys) {
@@ -168,6 +216,11 @@ function pickField(p: unknown, keys: string[]): unknown {
   return undefined;
 }
 
+/**
+ * Extracts the raw scoring inputs (BP/temp/age) from a patient record.
+ *
+ * We only depend on these fields for assessment scoring.
+ */
 function extractRiskInputs(p: unknown): {
   bpRaw: unknown;
   tempRaw: unknown;
@@ -192,6 +245,16 @@ function extractRiskInputs(p: unknown): {
   return { bpRaw, tempRaw, ageRaw };
 }
 
+/**
+ * Computes scores and flags for a single patient.
+ *
+ * Returns `null` if the record doesn't contain a usable patient id.
+ *
+ * Flags:
+ * - `highRisk`: `total >= 4`
+ * - `fever`: valid temperature and `temp >= 99.6`
+ * - `dataQualityIssue`: any invalid input among BP/temp/age
+ */
 export function computePatientRisk(p: unknown): ComputedPatientRisk | null {
   const patientId = getPatientId(p);
   if (!patientId) return null;
@@ -225,6 +288,11 @@ export function computePatientRisk(p: unknown): ComputedPatientRisk | null {
   };
 }
 
+/**
+ * Like `computePatientRisk(...)`, but includes the raw input values used.
+ *
+ * This powers the `/scored` endpoint and UI table for human verification.
+ */
 export function computePatientRiskDetails(
   p: unknown
 ): ComputedPatientRiskDetails | null {

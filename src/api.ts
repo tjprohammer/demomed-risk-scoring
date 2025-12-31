@@ -18,15 +18,34 @@ type ApiClientOptions = {
   sleepImpl?: (ms: number) => Promise<void>;
 };
 
+/**
+ * Promise-based sleep utility.
+ *
+ * Used by retry logic to wait between attempts and to introduce a small delay
+ * between pagination requests.
+ */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/**
+ * Applies jitter to a delay to avoid the "thundering herd" problem.
+ *
+ * Without jitter, multiple clients that get rate limited or hit a transient
+ * error at the same time can synchronize their retries and continue to collide.
+ */
 function jitter(ms: number): number {
   const rand = Math.random() * 0.3 + 0.85; // 0.85..1.15
   return Math.round(ms * rand);
 }
 
+/**
+ * Reads and parses a JSON response body.
+ *
+ * - Returns `null` for empty bodies
+ * - Returns parsed JSON for valid JSON
+ * - Falls back to returning raw text if parsing fails
+ */
 async function readJsonResponse(res: Response): Promise<unknown> {
   const text = await res.text();
   if (!text) return null;
@@ -46,6 +65,17 @@ export class ApiClient {
   private readonly fetchImpl: FetchLike;
   private readonly sleepImpl: (ms: number) => Promise<void>;
 
+  /**
+   * Creates a DemoMed API client.
+   *
+   * @param baseUrl Base API URL (e.g., https://assessment.ksensetech.com/api)
+   * @param apiKey DemoMed API key. Sent as `x-api-key` on every request.
+   * @param timeoutMs Per-request timeout (defaults to 15s).
+   * @param maxRetries Maximum retry attempts for transient errors.
+   * @param minDelayMs Initial backoff delay (will exponentially increase).
+   * @param fetchImpl Injectable fetch implementation (used for tests).
+   * @param sleepImpl Injectable sleep implementation (used for tests).
+   */
   constructor({
     baseUrl,
     apiKey,
@@ -64,6 +94,21 @@ export class ApiClient {
     this.sleepImpl = sleepImpl;
   }
 
+  /**
+   * Makes an HTTP request and returns `{ status, headers, body }`.
+   *
+   * Reliability features:
+   * - Aborts requests after `timeoutMs`.
+   * - Retries with exponential backoff + jitter.
+   * - Retries transient server errors (`500`, `503`).
+   * - Handles rate limiting (`429`) using:
+   *   - `Retry-After` header when present
+   *   - JSON fields like `retry_after` / `retryAfter` when present
+   *   - otherwise falls back to backoff.
+   *
+   * @param path API path beginning with `/`.
+   * @param init Fetch init options.
+   */
   async requestJson(
     path: string,
     init: RequestInit = {}
@@ -120,8 +165,8 @@ export class ApiClient {
           const retryAfterSeconds = Number.isFinite(retryAfterSecondsFromHeader)
             ? retryAfterSecondsFromHeader
             : Number.isFinite(retryAfterSecondsFromBody)
-              ? retryAfterSecondsFromBody
-              : NaN;
+            ? retryAfterSecondsFromBody
+            : NaN;
 
           const waitMs = Number.isFinite(retryAfterSeconds)
             ? Math.max(retryAfterSeconds, 0) * 1000
@@ -168,6 +213,12 @@ export class ApiClient {
     }
   }
 
+  /**
+   * Fetches a single paginated patients page.
+   *
+   * The upstream API may return a variety of shapes; this returns the raw body.
+   * Downstream code uses `normalizePatientsData(...)` to extract patient rows.
+   */
   async getPatientsPage(page: number, limit: number): Promise<unknown> {
     const path = `/patients?page=${encodeURIComponent(
       String(page)
@@ -179,6 +230,12 @@ export class ApiClient {
     return { data: [] };
   }
 
+  /**
+   * Submits the computed alert lists to the grader endpoint.
+   *
+   * The payload shape must be:
+   * `{ high_risk_patients: string[], fever_patients: string[], data_quality_issues: string[] }`
+   */
   async submitAssessment(payload: unknown): Promise<unknown> {
     const { body } = await this.requestJson("/submit-assessment", {
       method: "POST",
@@ -191,6 +248,15 @@ export class ApiClient {
   }
 }
 
+/**
+ * Normalizes various possible API response shapes into a list of patient records.
+ *
+ * Supported shapes:
+ * - `{ data: Patient[] }`
+ * - `{ data: { patients: Patient[] } }`
+ * - `{ patients: Patient[] }`
+ * - `Patient[]` (treated like `{ data: Patient[] }` by `getPatientsPage`)
+ */
 export function normalizePatientsData(
   resp: unknown
 ): Record<string, unknown>[] {
@@ -216,6 +282,11 @@ export function normalizePatientsData(
   return [];
 }
 
+/**
+ * Extracts a stable patient id from a record.
+ *
+ * The API is not perfectly consistent, so we accept multiple id keys.
+ */
 function getPatientIdFromRecord(p: unknown): string | null {
   const obj = p as any;
   const candidates = [obj?.patient_id, obj?.patientId, obj?.id, obj?.patientID];
@@ -225,6 +296,13 @@ function getPatientIdFromRecord(p: unknown): string | null {
   return null;
 }
 
+/**
+ * Deduplicates patient records by patient id.
+ *
+ * - Keeps the first record for a given id.
+ * - Returns records in deterministic order (sorted by patient id).
+ * - Appends any records that have no id at the end.
+ */
 function dedupeByPatientId(patients: Record<string, unknown>[]): {
   patients: Record<string, unknown>[];
   uniquePatientIds: number;
@@ -248,6 +326,12 @@ function dedupeByPatientId(patients: Record<string, unknown>[]): {
   return { patients: [...deduped, ...noId], uniquePatientIds: byId.size };
 }
 
+/**
+ * Metadata about a `getAllPatientsWithMeta(...)` fetch.
+ *
+ * `complete` is conservative: we only mark complete when the API pagination
+ * metadata and our observed results agree that we got everything.
+ */
 export type PatientsFetchMeta = {
   expectedTotal: number | null;
   totalPages: number | null;
@@ -256,6 +340,19 @@ export type PatientsFetchMeta = {
   complete: boolean;
 };
 
+/**
+ * Fetches *all* patients across pages and returns both the patient list and
+ * fetch metadata.
+ *
+ * Design goals:
+ * - Be resilient to empty/flaky pages (retry page reads multiple times).
+ * - Avoid stopping too early when pagination metadata is missing/inconsistent.
+ * - Provide a `complete` signal so callers can refuse to submit partial data.
+ *
+ * @param client ApiClient to use for HTTP.
+ * @param limit Page size (capped to 1..20 by callers).
+ * @param opts Tuning knobs primarily used for testing.
+ */
 export async function getAllPatientsWithMeta(
   client: ApiClient,
   limit = 20,
@@ -277,6 +374,10 @@ export async function getAllPatientsWithMeta(
     5000
   );
 
+  /**
+   * Fetches one page and returns normalized patient records.
+   * Retries the same page several times if it comes back empty.
+   */
   async function fetchNormalizedPage(page: number): Promise<{
     patients: Record<string, unknown>[];
     resp: any;
@@ -305,6 +406,10 @@ export async function getAllPatientsWithMeta(
   let expectedTotal: number | null = null;
   let totalPages: number | null = null;
 
+  /**
+   * Parses an integer-ish value from unknown API metadata fields.
+   * Returns null if parsing fails.
+   */
   function parseFiniteInt(value: unknown): number | null {
     if (typeof value === "number" && Number.isFinite(value)) {
       return Math.trunc(value);
@@ -316,6 +421,12 @@ export async function getAllPatientsWithMeta(
     return null;
   }
 
+  /**
+   * Learns pagination metadata (`total` and `totalPages`) from the API response.
+   *
+   * The API may omit these values on some pages; we keep the first valid values
+   * we see.
+   */
   function learnPagination(resp: any): void {
     const expectedTotalRaw = resp?.pagination?.total;
     const expectedParsed = parseFiniteInt(expectedTotalRaw);
@@ -330,6 +441,10 @@ export async function getAllPatientsWithMeta(
     }
   }
 
+  /**
+   * Adds any unseen patient ids to `seenIds` and returns how many were newly
+   * observed.
+   */
   function countNewIds(patients: Record<string, unknown>[]): number {
     let added = 0;
     for (const p of patients) {
@@ -437,6 +552,12 @@ export async function getAllPatientsWithMeta(
   return { patients: deduped.patients, meta };
 }
 
+/**
+ * Convenience wrapper that returns only patients and drops metadata.
+ *
+ * Prefer `getAllPatientsWithMeta(...)` when you need to know whether the fetch
+ * was complete (e.g., before submitting to the grader).
+ */
 export async function getAllPatients(
   client: ApiClient,
   limit = 20

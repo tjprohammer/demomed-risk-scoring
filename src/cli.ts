@@ -5,6 +5,15 @@ import { computePatientRisk } from "./scoring";
 
 const DEFAULT_BASE_URL = "https://assessment.ksensetech.com/api";
 
+/**
+ * Reads a flag value from argv.
+ *
+ * Supports both styles:
+ * - `--limit 20`
+ * - `--limit=20`
+ *
+ * Returns `null` if the flag is not present or has no value.
+ */
 function getArgValue(flag: string): string | null {
   const idx = process.argv.findIndex(
     (a) => a === flag || a.startsWith(`${flag}=`)
@@ -16,16 +25,36 @@ function getArgValue(flag: string): string | null {
   return next && !next.startsWith("--") ? next : null;
 }
 
+/**
+ * Checks whether argv includes a boolean flag.
+ *
+ * Supports both:
+ * - `--submit`
+ * - `--submit=true` (anything with `--submit=` counts as present)
+ */
 function hasFlag(flag: string): boolean {
   return process.argv.some((a) => a === flag || a.startsWith(`${flag}=`));
 }
 
+/**
+ * Interprets environment variables as booleans.
+ *
+ * This exists because some shells / npm scripts can drop argv flags on Windows.
+ * For example, `DEMOMED_SUBMIT=1 npm run submit` forces a submission even if
+ * `--submit` is not forwarded.
+ */
 function envFlag(name: string): boolean {
   const v = process.env[name];
   if (!v) return false;
   return v === "1" || v.toLowerCase() === "true" || v.toLowerCase() === "yes";
 }
 
+/**
+ * Reads a positional integer argument from argv.
+ *
+ * Used as a fallback when flags are not forwarded.
+ * Example: `tsx src/cli.ts 20` will treat argv[2] as the limit.
+ */
 function getPositionalNumberArg(index: number): number | null {
   const v = process.argv[index];
   if (!v) return null;
@@ -34,6 +63,18 @@ function getPositionalNumberArg(index: number): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * CLI entrypoint.
+ *
+ * Pipeline:
+ * 1) Load configuration (API key, base URL, page size).
+ * 2) Fetch all patients with pagination + robustness.
+ * 3) Refuse to submit if the fetch is not complete.
+ * 4) Compute per-patient scores/flags.
+ * 5) Build the required alert lists (deduped + sorted IDs).
+ * 6) Write `alert-lists.json`.
+ * 7) Optionally submit to `/submit-assessment`.
+ */
 export async function runCli(): Promise<void> {
   const apiKey = process.env.DEMOMED_API_KEY || getArgValue("--apiKey");
   const baseUrl =
@@ -48,9 +89,24 @@ export async function runCli(): Promise<void> {
     10
   );
   const outPath = getArgValue("--out") || "alert-lists.json";
+
+  /**
+   * Submission is always opt-in.
+   * - `--submit` on the CLI
+   * - or `DEMOMED_SUBMIT=1`
+   */
   const shouldSubmit = hasFlag("--submit") || envFlag("DEMOMED_SUBMIT");
+
+  /**
+   * "Require complete" is used for both `--verify` and submission.
+   *
+   * - Verify mode should fail fast if the dataset is incomplete.
+   * - Submitting partial datasets wastes limited attempts.
+   */
   const requireComplete =
-    hasFlag("--requireComplete") || hasFlag("--verify") || envFlag("DEMOMED_VERIFY");
+    hasFlag("--requireComplete") ||
+    hasFlag("--verify") ||
+    envFlag("DEMOMED_VERIFY");
 
   if (!apiKey) {
     console.error("Missing API key. Set DEMOMED_API_KEY or pass --apiKey.");
@@ -128,6 +184,11 @@ export async function runCli(): Promise<void> {
   }
 }
 
+/**
+ * Execute the CLI when this file is run directly.
+ *
+ * In tests, other modules can import and call `runCli()` instead.
+ */
 runCli().catch((err) => {
   console.error("Fatal error:", err);
   process.exit(1);

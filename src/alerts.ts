@@ -1,9 +1,25 @@
 import type { AlertLists, ComputedPatientRisk } from "./types";
 
+/**
+ * Deduplicates and sorts an array of patient ids.
+ *
+ * This guarantees deterministic output (stable ordering) which is helpful for:
+ * - reviewing generated JSON
+ * - tests
+ * - avoiding accidental grader mismatches due to ordering
+ */
 function uniqSorted(ids: string[]): string[] {
   return Array.from(new Set(ids)).sort((a, b) => a.localeCompare(b));
 }
 
+/**
+ * Builds the three required alert lists from per-patient computed risk.
+ *
+ * Output lists:
+ * - `high_risk_patients`: `flags.highRisk === true`
+ * - `fever_patients`: `flags.fever === true`
+ * - `data_quality_issues`: `flags.dataQualityIssue === true`
+ */
 export function buildAlertLists(computed: ComputedPatientRisk[]): AlertLists {
   const highRisk: string[] = [];
   const fever: string[] = [];

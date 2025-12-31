@@ -7,6 +7,13 @@ import type { AlertLists, ComputedPatientRiskDetails } from "./types";
 
 const DEFAULT_BASE_URL = "https://assessment.ksensetech.com/api";
 
+/**
+ * Gets the DemoMed API key for this request.
+ *
+ * Priority:
+ * 1) `x-api-key` header (useful for local testing in the UI)
+ * 2) `DEMOMED_API_KEY` environment variable (recommended)
+ */
 function getApiKey(req: express.Request): string | null {
   const headerKey = req.header("x-api-key");
   if (headerKey && headerKey.trim()) return headerKey.trim();
@@ -17,6 +24,14 @@ function getApiKey(req: express.Request): string | null {
   return null;
 }
 
+/**
+ * Gets the base URL for the upstream DemoMed API.
+ *
+ * Priority:
+ * 1) `x-base-url` header
+ * 2) `DEMOMED_BASE_URL` env var
+ * 3) built-in default
+ */
 function getBaseUrl(req: express.Request): string {
   const headerBase = req.header("x-base-url");
   if (headerBase && headerBase.trim())
@@ -25,6 +40,18 @@ function getBaseUrl(req: express.Request): string {
   return (process.env.DEMOMED_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, "");
 }
 
+/**
+ * Computes the three assessment alert lists (high-risk, fever, data quality).
+ *
+ * This is the shared core for:
+ * - `GET /alerts`
+ * - `POST /submit`
+ *
+ * @param apiKey DemoMed API key
+ * @param baseUrl DemoMed API base URL
+ * @param limit page size (capped to 1..20)
+ * @param opts.requireComplete when true, throws if fetch cannot be confirmed complete
+ */
 async function computeAlerts(
   apiKey: string,
   baseUrl: string,
@@ -60,6 +87,12 @@ async function computeAlerts(
   return buildAlertLists(computed);
 }
 
+/**
+ * Computes per-patient risk details (scores + flags + raw inputs).
+ *
+ * This powers the verification UI (`GET /scored`) so you can inspect exactly
+ * why each patient was classified the way they were.
+ */
 async function computeScoredPatients(
   apiKey: string,
   baseUrl: string,
@@ -81,6 +114,16 @@ async function computeScoredPatients(
   return computed;
 }
 
+/**
+ * Starts the Express + Next.js server.
+ *
+ * Endpoints:
+ * - `GET /alerts`: returns the three computed alert lists
+ * - `GET /scored`: returns a per-patient breakdown for verification
+ * - `POST /submit`: computes alerts (requires complete fetch) and submits to grader
+ *
+ * Everything else is handled by Next.js.
+ */
 async function main(): Promise<void> {
   const dev = process.env.NODE_ENV !== "production";
   const app = next({ dev });

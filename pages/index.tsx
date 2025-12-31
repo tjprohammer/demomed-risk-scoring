@@ -51,6 +51,15 @@ export default function Home() {
     };
   }, [alerts]);
 
+  /**
+   * Fetches `/alerts` from our Express server.
+   *
+   * This endpoint returns the *exact* payload shape required by the grader:
+   * `{ high_risk_patients, fever_patients, data_quality_issues }`.
+   *
+   * The UI optionally forwards `x-api-key` and `x-base-url` so you can run the
+   * server without setting env vars.
+   */
   async function loadAlerts(): Promise<void> {
     setLoading(true);
     setError(null);
@@ -87,6 +96,12 @@ export default function Home() {
     }
   }
 
+  /**
+   * Fetches `/scored` from our Express server.
+   *
+   * This is the human-verification view: it returns a row per patient with
+   * component scores, flags, and the raw inputs used to compute them.
+   */
   async function loadScored(): Promise<void> {
     setLoading(true);
     setError(null);
@@ -126,6 +141,11 @@ export default function Home() {
     }
   }
 
+  /**
+   * Produces a compact string describing which input fields are invalid.
+   *
+   * Used in the scored-patients table so data quality issues are obvious.
+   */
   function invalidFields(p: ScoredPatient): string {
     const bad: string[] = [];
     if (!p.flags.bpValid) bad.push("BP");
